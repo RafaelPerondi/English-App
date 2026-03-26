@@ -2,12 +2,14 @@
 Serviço de geração de imagens de feedback — Pillow.
 Layout clean pastel Apple-vibe. Peach warm palette.
 Vertical mobile 1080x1920+. Score X/100.
-Sem tips/regras na imagem (vão como texto no WhatsApp).
+Highlights robustos que funcionam com textos longos.
+Sem tips/regras na imagem.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -46,6 +48,20 @@ MIN_H = 1920
 HL_PAD_X = 10
 HL_PAD_Y = 6
 
+# Encouragement em português (fallback se vier em inglês)
+_PT_ENCOURAGEMENTS = {
+    "great effort": "Ótimo esforço! Continue assim!",
+    "keep practicing": "Continue praticando!",
+    "good job": "Bom trabalho!",
+    "well done": "Muito bem!",
+    "nice try": "Boa tentativa!",
+    "keep going": "Continue assim!",
+    "keep it up": "Continue assim!",
+    "you're doing great": "Você está indo muito bem!",
+    "excellent": "Excelente!",
+    "perfect": "Perfeito! Sem erros!",
+}
+
 
 # ─────────────────────────────────────────────
 # Fontes
@@ -77,27 +93,45 @@ def _f(size, bold=False):
 # Helpers
 # ─────────────────────────────────────────────
 
-def _wrap(text, font, mw):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        t = f"{cur} {w}".strip()
-        if font.getbbox(t)[2] <= mw:
-            cur = t
-        else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines or [""]
+def _clean(word: str) -> str:
+    """Remove toda pontuação de uma palavra pra comparação."""
+    return re.sub(r"[^a-zA-Z0-9']", "", word).lower()
 
 
-def _lh(font):
-    return font.getbbox("Ay")[3] - font.getbbox("Ay")[1] + LINE_SP
+def _build_highlight_set(errors: list, key: str) -> set:
+    """
+    Constrói set de palavras limpas a partir dos erros.
+    key = 'wrong' para o card de pronúncia, 'right' para o card de correção.
+    Inclui cada palavra individual de frases multi-palavra.
+    """
+    result = set()
+    for e in errors:
+        val = e.get(key, "")
+        if not val:
+            continue
+        # Adiciona a frase inteira (limpa) e cada palavra individual
+        result.add(_clean(val))
+        for w in val.split():
+            cleaned = _clean(w)
+            if cleaned and len(cleaned) > 1:  # ignora palavras de 1 letra como pontuação
+                result.add(cleaned)
+    return result
 
 
-def _th(text, font, mw):
-    return _lh(font) * len(_wrap(text, font, mw))
+def _to_portuguese(encouragement: str) -> str:
+    """Converte encouragement para português se estiver em inglês."""
+    if not encouragement:
+        return "Continue praticando!"
+    lower = encouragement.lower()
+    # Se já contém caracteres portugueses, provavelmente já está em PT
+    if any(c in lower for c in "ãõçéáíóú"):
+        return encouragement
+    # Tenta match parcial
+    for eng, pt in _PT_ENCOURAGEMENTS.items():
+        if eng in lower:
+            return pt
+    # Fallback genérico
+    return "Ótimo esforço! Continue praticando!"
 
 
 def _tw(text, font):
@@ -108,6 +142,10 @@ def _tw(text, font):
 def _text_h(font):
     bb = font.getbbox("Ay")
     return bb[3] - bb[1]
+
+
+def _lh(font):
+    return _text_h(font) + LINE_SP
 
 
 def _gradient_bg(img, ht, total):
@@ -135,24 +173,8 @@ def _card_shadow(draw, x0, y0, x1, y1):
         )
 
 
-def _draw_badge(draw, x, y, text, font, bg, fg):
-    """Desenha badge pill. Retorna (largura, altura)."""
-    tw = _tw(text, font)
-    th = _text_h(font)
-    pw, ph = tw + 44, th + 22
-    draw.rounded_rectangle(
-        (x, y, x + pw, y + ph),
-        radius=ph // 2, fill=bg,
-    )
-    draw.text(
-        (x + 22, y + (ph - th) // 2),
-        text, font=font, fill=fg,
-    )
-    return pw, ph
-
-
 def _draw_card_header(draw, card_x, row_y, title, title_font, badge_text, badge_font):
-    """Desenha título + badge alinhados verticalmente. Retorna y após o divider."""
+    """Desenha título + badge alinhados. Retorna y após o divider."""
     title_th = _text_h(title_font)
     badge_tw = _tw(badge_text, badge_font)
     badge_th = _text_h(badge_font)
@@ -174,7 +196,6 @@ def _draw_card_header(draw, card_x, row_y, title, title_font, badge_text, badge_
         badge_text, font=badge_font, fill=BADGE_TXT,
     )
 
-    # Divider
     div_y = row_y + row_h + 16
     draw.line(
         [(card_x + CARD_PAD, div_y), (W - card_x - CARD_PAD, div_y)],
@@ -183,33 +204,73 @@ def _draw_card_header(draw, card_x, row_y, title, title_font, badge_text, badge_
     return div_y + 24
 
 
-def _draw_highlighted_words(draw, cx, cy, words, highlight_set, font, font_bold,
-                            hl_color, text_color, max_x, lh, sp, body_h):
-    """Desenha palavras com highlights alinhados. Retorna cy final."""
-    for word in words:
-        wc = word.lower().strip(".,!?;:\"'")
-        ww = _tw(word, font)
+def _render_text_with_highlights(draw, start_x, start_y, text, highlight_set,
+                                  font, font_bold, hl_color, hl_text_color,
+                                  max_x, lh, sp, body_h):
+    """
+    Renderiza texto palavra por palavra com highlights.
+    Usa _clean() para comparação robusta.
+    Retorna y final (abaixo da última linha).
+    """
+    words = text.split()
+    cx, cy = start_x, start_y
 
-        if wc in highlight_set:
-            hw = ww + HL_PAD_X * 2
-            total = hw + 4
-            if cx + total > max_x:
-                cx = PAD + CARD_PAD
+    for word in words:
+        cleaned = _clean(word)
+        ww = _tw(word, font)
+        is_highlighted = cleaned in highlight_set and len(cleaned) > 0
+
+        if is_highlighted:
+            # Largura com padding
+            hw = ww + HL_PAD_X * 2 + 4
+            # Quebra de linha se não cabe
+            if cx + hw > max_x:
+                cx = start_x
                 cy += lh
+            # Retângulo highlight
             draw.rounded_rectangle(
-                (cx - 2, cy - HL_PAD_Y, cx + hw + 2, cy + body_h + HL_PAD_Y),
+                (cx, cy - HL_PAD_Y, cx + hw, cy + body_h + HL_PAD_Y),
                 radius=10, fill=hl_color,
             )
-            draw.text((cx + HL_PAD_X, cy), word, font=font_bold, fill=text_color)
-            cx += hw + sp + 2
+            # Texto centralizado no highlight
+            draw.text((cx + HL_PAD_X + 2, cy), word, font=font_bold, fill=hl_text_color)
+            cx += hw + sp
         else:
+            # Quebra de linha se não cabe
             if cx + ww > max_x:
-                cx = PAD + CARD_PAD
+                cx = start_x
                 cy += lh
             draw.text((cx, cy), word, font=font, fill=TEXT_DARK)
             cx += ww + sp
 
-    return cy
+    # Retorna y abaixo da última linha
+    return cy + lh
+
+
+def _measure_text_with_highlights(text, highlight_set, font, font_bold,
+                                   start_x, max_x, lh, sp):
+    """Mede a altura que o texto com highlights vai ocupar (sem desenhar)."""
+    words = text.split()
+    cx, cy = start_x, 0
+
+    for word in words:
+        cleaned = _clean(word)
+        ww = _tw(word, font)
+        is_highlighted = cleaned in highlight_set and len(cleaned) > 0
+
+        if is_highlighted:
+            hw = ww + HL_PAD_X * 2 + 4
+            if cx + hw > max_x:
+                cx = start_x
+                cy += lh
+            cx += hw + sp
+        else:
+            if cx + ww > max_x:
+                cx = start_x
+                cy += lh
+            cx += ww + sp
+
+    return cy + lh
 
 
 # ─────────────────────────────────────────────
@@ -229,28 +290,24 @@ def generate_feedback_image(correction_data: dict, filename: str) -> Path:
 
     cw = W - PAD * 2
     ci = cw - CARD_PAD * 2
+    text_start_x = PAD + CARD_PAD
+    text_max_x = PAD + ci
 
     HH = 360
 
     original = correction_data.get("original", "...")
     corrected = correction_data.get("corrected", "...")
     errors = correction_data.get("errors", [])[:5]
-    encouragement = correction_data.get("encouragement", "")
+    encouragement = _to_portuguese(correction_data.get("encouragement", ""))
     err_count = len(errors)
 
     # Score
     total_words = len(original.split()) if original else 10
     score = max(0, min(100, int(100 - (err_count / max(total_words, 1)) * 100)))
 
-    # Mapas
-    error_words = {
-        e["wrong"].lower(): e.get("right", "")
-        for e in errors if e.get("wrong")
-    }
-    right_set = {
-        e["right"].lower().strip(".,"): True
-        for e in errors if e.get("right")
-    }
+    # Highlight sets (comparação robusta)
+    wrong_set = _build_highlight_set(errors, "wrong")
+    right_set = _build_highlight_set(errors, "right")
 
     sol_word = "soluções" if err_count != 1 else "solução"
 
@@ -258,13 +315,21 @@ def generate_feedback_image(correction_data: dict, filename: str) -> Path:
     sp = _tw(" ", f_body)
     body_h = _text_h(f_body)
 
-    # ── Calcular altura ──
-    c1_body = _th(original, f_body, ci - 20) + len(errors) * 18 + 30
-    c1h = 80 + c1_body + CARD_PAD
+    # ── Medir alturas reais dos textos ──
+    card_header_h = 80  # título + badge + divider + padding
+    card_bottom_pad = CARD_PAD
 
-    c2_body = _th(corrected, f_body, ci - 20) + len(errors) * 18 + 30
-    c2h = 80 + c2_body + CARD_PAD
+    text1_h = _measure_text_with_highlights(
+        original, wrong_set, f_body, f_body_b, text_start_x, text_max_x, lh, sp,
+    )
+    c1h = card_header_h + text1_h + card_bottom_pad
 
+    text2_h = _measure_text_with_highlights(
+        corrected, right_set, f_body, f_body_b, text_start_x, text_max_x, lh, sp,
+    )
+    c2h = card_header_h + text2_h + card_bottom_pad
+
+    # Altura total
     content_h = HH + 30 + c1h + 36 + c2h + 44 + 80 + PAD + 50
     img_h = max(content_h, MIN_H)
 
@@ -298,7 +363,7 @@ def generate_feedback_image(correction_data: dict, filename: str) -> Path:
     # ── Cards ──
     y = HH + 30
 
-    # Card 1: Pronúncia
+    # ── Card 1: Pronúncia ──
     _card_shadow(draw, PAD - 2, y, W - PAD + 2, y + c1h)
     draw.rounded_rectangle(
         (PAD - 2, y, W - PAD + 2, y + c1h),
@@ -311,19 +376,17 @@ def generate_feedback_image(correction_data: dict, filename: str) -> Path:
         f"{err_count} {sol_word}", f_badge,
     )
 
-    max_x = PAD + ci
-    cx = PAD + CARD_PAD
-    cy = _draw_highlighted_words(
-        draw, cx, cy,
-        original.split(), error_words,
+    _render_text_with_highlights(
+        draw, text_start_x, cy,
+        original, wrong_set,
         f_body, f_body_b,
         HIGHLIGHT_YELLOW, TEXT_DARK,
-        max_x, lh, sp, body_h,
+        text_max_x, lh, sp, body_h,
     )
 
     y += c1h + 36
 
-    # Card 2: Como melhorar
+    # ── Card 2: Como melhorar ──
     _card_shadow(draw, PAD - 2, y, W - PAD + 2, y + c2h)
     draw.rounded_rectangle(
         (PAD - 2, y, W - PAD + 2, y + c2h),
@@ -336,20 +399,38 @@ def generate_feedback_image(correction_data: dict, filename: str) -> Path:
         "corrigido", f_badge,
     )
 
-    cx = PAD + CARD_PAD
-    cy = _draw_highlighted_words(
-        draw, cx, cy,
-        corrected.split(), right_set,
+    _render_text_with_highlights(
+        draw, text_start_x, cy,
+        corrected, right_set,
         f_body, f_body_b,
         HIGHLIGHT_GREEN, ACCENT_GREEN,
-        max_x, lh, sp, body_h,
+        text_max_x, lh, sp, body_h,
     )
 
     y += c2h + 44
 
-    # ── Encorajamento ──
+    # ── Encorajamento (português, limitado pra não passar da imagem) ──
     if encouragement:
-        draw.text((PAD, y), encouragement, font=f_enc, fill=ACCENT_PURPLE)
+        # Limita a 50 caracteres
+        if len(encouragement) > 50:
+            encouragement = encouragement[:47] + "..."
+        # Usa wrap pra garantir que não passa da largura
+        enc_max_w = cw - 20
+        enc_lines = []
+        cur = ""
+        for word in encouragement.split():
+            test = f"{cur} {word}".strip()
+            if _tw(test, f_enc) <= enc_max_w:
+                cur = test
+            else:
+                if cur:
+                    enc_lines.append(cur)
+                cur = word
+        if cur:
+            enc_lines.append(cur)
+        for line in enc_lines:
+            draw.text((PAD, y), line, font=f_enc, fill=ACCENT_PURPLE)
+            y += _lh(f_enc)
 
     # ── Home bar ──
     bar_w, bar_h = 180, 6
