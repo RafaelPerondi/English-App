@@ -1,13 +1,13 @@
 """
 Serviço de geração de imagens de feedback — Pillow.
-Layout vertical FULL HD mobile (1080×1920+).
-Preenche a tela toda do celular ao abrir.
+Layout clean pastel Apple-vibe. Peach warm palette.
+Vertical mobile 1080x1920+. Score X/100.
+Sem tips/regras na imagem (vão como texto no WhatsApp).
 """
 
 from __future__ import annotations
 
 import logging
-import random
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -17,42 +17,41 @@ from config import AUDIO_CACHE_DIR, FONTS_DIR
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# Cores
+# Cores — Peach warm + roxo vivo
 # ─────────────────────────────────────────────
 
-BG = (9, 9, 11)
-HEADER_L = (88, 28, 135)
-HEADER_R = (168, 85, 247)
-PURPLE = (167, 139, 250)
-GREEN = (74, 222, 128)
-GREEN_TXT = (209, 250, 229)
-RED = (239, 68, 68)
-YELLOW = (250, 204, 21)
+BG_TOP = (245, 225, 215)
+BG_MID = (250, 236, 228)
+BG_BOT = (252, 246, 242)
+CARD_BG = (255, 255, 255)
+CARD_SHADOW = (215, 213, 225)
+TEXT_DARK = (28, 28, 35)
+TEXT_MED = (80, 80, 95)
+ACCENT_PURPLE = (100, 45, 210)
+ACCENT_GREEN = (45, 155, 60)
+HIGHLIGHT_GREEN = (210, 242, 200)
+HIGHLIGHT_YELLOW = (255, 244, 195)
+BADGE_BG = (232, 222, 255)
+BADGE_TXT = (100, 45, 210)
 WHITE = (255, 255, 255)
-BODY = (175, 175, 185)
-MUTED = (70, 70, 80)
-RULE_C = (100, 100, 115)
-CARD_BG = (18, 18, 22)
-CARD_BORDER = (38, 38, 48)
-PILL_RED_BG = (55, 16, 16)
-PILL_GREEN_BG = (12, 42, 22)
-ENC_BG = (32, 30, 12)
-ENC_BORDER = (65, 60, 18)
+DIVIDER = (235, 233, 242)
+HOME_BAR = (200, 198, 210)
 
 W = 1080
-PAD = 56
-CARD_PAD = 44
-CARD_R = 30
-BORDER_W = 7
-LINE_SP = 12
-MIN_H = 1920  # Altura mínima = tela mobile completa
+PAD = 64
+CARD_PAD = 52
+CARD_R = 36
+LINE_SP = 18
+MIN_H = 1920
+HL_PAD_X = 10
+HL_PAD_Y = 6
 
 
 # ─────────────────────────────────────────────
 # Fontes
 # ─────────────────────────────────────────────
 
-def _f(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+def _f(size, bold=False):
     names = (
         ["arialbd.ttf", "segoeuib.ttf", "calibrib.ttf"]
         if bold
@@ -68,7 +67,8 @@ def _f(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         if p.exists():
             return ImageFont.truetype(str(p), size)
     try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+        path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        return ImageFont.truetype(path, size)
     except OSError:
         return ImageFont.load_default()
 
@@ -77,7 +77,7 @@ def _f(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 # Helpers
 # ─────────────────────────────────────────────
 
-def _wrap(text: str, font, mw: int) -> list[str]:
+def _wrap(text, font, mw):
     words, lines, cur = text.split(), [], ""
     for w in words:
         t = f"{cur} {w}".strip()
@@ -92,240 +92,272 @@ def _wrap(text: str, font, mw: int) -> list[str]:
     return lines or [""]
 
 
-def _lh(font) -> int:
+def _lh(font):
     return font.getbbox("Ay")[3] - font.getbbox("Ay")[1] + LINE_SP
 
 
-def _th(text, font, mw) -> int:
+def _th(text, font, mw):
     return _lh(font) * len(_wrap(text, font, mw))
 
 
-def _dt(draw, pos, text, font, fill, mw) -> int:
-    x, y = pos
-    h = _lh(font)
-    for ln in _wrap(text, font, mw):
-        draw.text((x, y), ln, font=font, fill=fill)
-        y += h
-    return y
+def _tw(text, font):
+    bb = font.getbbox(text)
+    return bb[2] - bb[0]
 
 
-def _stars(draw, w, h):
-    rng = random.Random(42)
-    for _ in range(80):
-        sx = rng.randint(10, w - 10)
-        sy = rng.randint(10, h - 10)
-        sz = rng.choice([1, 2, 2, 3])
-        draw.ellipse((sx, sy, sx + sz, sy + sz), fill=(255, 255, 255, 50))
+def _text_h(font):
+    bb = font.getbbox("Ay")
+    return bb[3] - bb[1]
 
 
-def _gradient(img, h):
-    """Gradiente roxo rápido (linha por linha, não pixel por pixel)."""
-    w = img.width
-    for y in range(h):
-        yr = y / max(h - 1, 1)
-        # Cria uma linha de gradiente horizontal
-        line = Image.new("RGB", (w, 1))
-        px = line.load()
-        for x in range(w):
-            t = (x / max(w - 1, 1)) * 0.7 + yr * 0.3
-            r = int(HEADER_L[0] + (HEADER_R[0] - HEADER_L[0]) * t)
-            g = int(HEADER_L[1] + (HEADER_R[1] - HEADER_L[1]) * t)
-            b = int(HEADER_L[2] + (HEADER_R[2] - HEADER_L[2]) * t)
-            px[x, 0] = (r, g, b)
-        img.paste(line, (0, y))
+def _gradient_bg(img, ht, total):
+    d = ImageDraw.Draw(img)
+    for y in range(total):
+        if y < ht:
+            t = y / max(ht - 1, 1)
+            r = int(BG_TOP[0] + (BG_MID[0] - BG_TOP[0]) * t)
+            g = int(BG_TOP[1] + (BG_MID[1] - BG_TOP[1]) * t)
+            b = int(BG_TOP[2] + (BG_MID[2] - BG_TOP[2]) * t)
+        else:
+            t = min((y - ht) / max(total - ht - 1, 1), 1.0)
+            r = int(BG_MID[0] + (BG_BOT[0] - BG_MID[0]) * t)
+            g = int(BG_MID[1] + (BG_BOT[1] - BG_MID[1]) * t)
+            b = int(BG_MID[2] + (BG_BOT[2] - BG_MID[2]) * t)
+        d.line([(0, y), (W, y)], fill=(r, g, b))
 
 
-def _card(draw, x0, y0, x1, y1, accent=None):
-    draw.rounded_rectangle((x0, y0, x1, y1), radius=CARD_R, fill=CARD_BG, outline=CARD_BORDER)
-    if accent:
+def _card_shadow(draw, x0, y0, x1, y1):
+    for i in range(3, 0, -1):
+        o = i * 3
         draw.rounded_rectangle(
-            (x0 + 3, y0 + 14, x0 + 3 + BORDER_W, y1 - 14),
-            radius=3, fill=accent,
+            (x0 + o, y0 + o, x1 + o, y1 + o),
+            radius=CARD_R, fill=CARD_SHADOW,
         )
 
 
-def _pill(draw, x, y, text, font, color, bg, strike=False) -> int:
-    tw = font.getbbox(text)[2]
-    th = font.getbbox(text)[3] - font.getbbox(text)[1]
-    pw, ph = tw + 52, th + 24
-    draw.rounded_rectangle((x, y, x + pw, y + ph), radius=ph // 2, fill=bg)
-    tx, ty = x + 26, y + (ph - th) // 2
-    draw.text((tx, ty), text, font=font, fill=color)
-    if strike:
-        mid = ty + th // 2 + 1
-        draw.line((tx - 3, mid, tx + tw + 3, mid), fill=color, width=3)
-    return x + pw
+def _draw_badge(draw, x, y, text, font, bg, fg):
+    """Desenha badge pill. Retorna (largura, altura)."""
+    tw = _tw(text, font)
+    th = _text_h(font)
+    pw, ph = tw + 44, th + 22
+    draw.rounded_rectangle(
+        (x, y, x + pw, y + ph),
+        radius=ph // 2, fill=bg,
+    )
+    draw.text(
+        (x + 22, y + (ph - th) // 2),
+        text, font=font, fill=fg,
+    )
+    return pw, ph
+
+
+def _draw_card_header(draw, card_x, row_y, title, title_font, badge_text, badge_font):
+    """Desenha título + badge alinhados verticalmente. Retorna y após o divider."""
+    title_th = _text_h(title_font)
+    badge_tw = _tw(badge_text, badge_font)
+    badge_th = _text_h(badge_font)
+    badge_pw, badge_ph = badge_tw + 44, badge_th + 22
+
+    row_h = max(title_th, badge_ph)
+    title_y = row_y + (row_h - title_th) // 2
+    badge_y = row_y + (row_h - badge_ph) // 2
+
+    draw.text((card_x + CARD_PAD, title_y), title, font=title_font, fill=TEXT_DARK)
+
+    badge_x = W - card_x - CARD_PAD - badge_pw
+    draw.rounded_rectangle(
+        (badge_x, badge_y, badge_x + badge_pw, badge_y + badge_ph),
+        radius=badge_ph // 2, fill=BADGE_BG,
+    )
+    draw.text(
+        (badge_x + 22, badge_y + (badge_ph - badge_th) // 2),
+        badge_text, font=badge_font, fill=BADGE_TXT,
+    )
+
+    # Divider
+    div_y = row_y + row_h + 16
+    draw.line(
+        [(card_x + CARD_PAD, div_y), (W - card_x - CARD_PAD, div_y)],
+        fill=DIVIDER, width=2,
+    )
+    return div_y + 24
+
+
+def _draw_highlighted_words(draw, cx, cy, words, highlight_set, font, font_bold,
+                            hl_color, text_color, max_x, lh, sp, body_h):
+    """Desenha palavras com highlights alinhados. Retorna cy final."""
+    for word in words:
+        wc = word.lower().strip(".,!?;:\"'")
+        ww = _tw(word, font)
+
+        if wc in highlight_set:
+            hw = ww + HL_PAD_X * 2
+            total = hw + 4
+            if cx + total > max_x:
+                cx = PAD + CARD_PAD
+                cy += lh
+            draw.rounded_rectangle(
+                (cx - 2, cy - HL_PAD_Y, cx + hw + 2, cy + body_h + HL_PAD_Y),
+                radius=10, fill=hl_color,
+            )
+            draw.text((cx + HL_PAD_X, cy), word, font=font_bold, fill=text_color)
+            cx += hw + sp + 2
+        else:
+            if cx + ww > max_x:
+                cx = PAD + CARD_PAD
+                cy += lh
+            draw.text((cx, cy), word, font=font, fill=TEXT_DARK)
+            cx += ww + sp
+
+    return cy
 
 
 # ─────────────────────────────────────────────
-# Geração
+# Geração principal
 # ─────────────────────────────────────────────
 
 def generate_feedback_image(correction_data: dict, filename: str) -> Path:
 
-    # Fontes HD
-    f_title = _f(44, True)
-    f_sub = _f(24)
-    f_label = _f(24, True)
-    f_body = _f(32)
-    f_body_b = _f(32, True)
-    f_pill = _f(30)
-    f_pill_b = _f(30, True)
-    f_rule = _f(24)
-    f_sec = _f(22, True)
-    f_enc = _f(30, True)
+    f_tag = _f(26, True)
+    f_title = _f(60, True)
+    f_score = _f(90, True)
+    f_section = _f(44, True)
+    f_badge = _f(28, True)
+    f_body = _f(36)
+    f_body_b = _f(36, True)
+    f_enc = _f(36, True)
 
     cw = W - PAD * 2
-    ci = cw - CARD_PAD * 2 - BORDER_W
+    ci = cw - CARD_PAD * 2
 
-    HH = 160  # header height
+    HH = 360
 
     original = correction_data.get("original", "...")
     corrected = correction_data.get("corrected", "...")
     errors = correction_data.get("errors", [])[:5]
     encouragement = correction_data.get("encouragement", "")
+    err_count = len(errors)
 
-    # ── Calcular altura do conteúdo ──
-    content_y = HH + 48
+    # Score
+    total_words = len(original.split()) if original else 10
+    score = max(0, min(100, int(100 - (err_count / max(total_words, 1)) * 100)))
 
-    # Card original
-    content_y += 50
-    content_y += CARD_PAD * 2 + _th(original, f_body, ci)
-    content_y += 32
+    # Mapas
+    error_words = {
+        e["wrong"].lower(): e.get("right", "")
+        for e in errors if e.get("wrong")
+    }
+    right_set = {
+        e["right"].lower().strip(".,"): True
+        for e in errors if e.get("right")
+    }
 
-    # Card corrigido
-    content_y += 50
-    content_y += CARD_PAD * 2 + _th(corrected, f_body_b, ci)
-    content_y += 44
+    sol_word = "soluções" if err_count != 1 else "solução"
 
-    # Correções
-    if errors:
-        content_y += 56
-        for e in errors:
-            content_y += 110 + (40 if e.get("rule") else 0) + 20
-        content_y += 16
+    lh = _lh(f_body)
+    sp = _tw(" ", f_body)
+    body_h = _text_h(f_body)
 
-    # Encorajamento
-    if encouragement:
-        content_y += 32 + _th(encouragement, f_enc, cw - 96) + 64
+    # ── Calcular altura ──
+    c1_body = _th(original, f_body, ci - 20) + len(errors) * 18 + 30
+    c1h = 80 + c1_body + CARD_PAD
 
-    content_y += PAD
+    c2_body = _th(corrected, f_body, ci - 20) + len(errors) * 18 + 30
+    c2h = 80 + c2_body + CARD_PAD
 
-    # Garantir altura mínima pra preencher tela mobile
-    img_h = max(content_y, MIN_H)
-
-    # Se a altura mínima é maior que o conteúdo, calcular offset pra
-    # distribuir espaço: header no topo, conteúdo um pouco mais baixo
-    extra_space = img_h - content_y
-    top_offset = min(extra_space // 3, 120)  # empurra conteúdo pra baixo suavemente
+    content_h = HH + 30 + c1h + 36 + c2h + 44 + 80 + PAD + 50
+    img_h = max(content_h, MIN_H)
 
     # ── Criar imagem ──
-    img = Image.new("RGB", (W, img_h), BG)
+    img = Image.new("RGB", (W, img_h), BG_BOT)
+    _gradient_bg(img, HH, img_h)
     draw = ImageDraw.Draw(img)
 
-    # Estrelas
-    _stars(draw, W, img_h)
+    y = PAD + 20
 
-    # Header gradiente
-    _gradient(img, HH)
-    draw = ImageDraw.Draw(img)
-
-    # ── Header: decoração + título ──
-    # Barra decorativa vertical à esquerda do título
-    bar_x = PAD
-    bar_y = (HH - 70) // 2
+    # ── Tag "Feedback" ──
+    tag = "Feedback"
+    ttw = _tw(tag, f_tag)
+    tw2, th2 = ttw + 52, 50
     draw.rounded_rectangle(
-        (bar_x, bar_y, bar_x + 8, bar_y + 70),
-        radius=4, fill=WHITE,
+        (PAD, y, PAD + tw2, y + th2),
+        radius=th2 // 2, fill=WHITE,
+    )
+    draw.ellipse((PAD + 16, y + 15, PAD + 31, y + 30), fill=ACCENT_PURPLE)
+    draw.text((PAD + 40, y + 11), tag, font=f_tag, fill=TEXT_MED)
+    y += th2 + 40
+
+    # ── Score ──
+    draw.text((PAD, y), "Score", font=f_title, fill=TEXT_DARK)
+    y += 72
+    score_text = str(score)
+    draw.text((PAD, y), score_text, font=f_score, fill=ACCENT_PURPLE)
+    sw = _tw(score_text, f_score)
+    draw.text((PAD + sw + 8, y + 30), "/100", font=f_title, fill=TEXT_DARK)
+
+    # ── Cards ──
+    y = HH + 30
+
+    # Card 1: Pronúncia
+    _card_shadow(draw, PAD - 2, y, W - PAD + 2, y + c1h)
+    draw.rounded_rectangle(
+        (PAD - 2, y, W - PAD + 2, y + c1h),
+        radius=CARD_R, fill=CARD_BG,
     )
 
-    # Título "Feedback"
-    draw.text((bar_x + 28, HH // 2 - 24), "Feedback", font=f_title, fill=WHITE)
+    cy = _draw_card_header(
+        draw, PAD, y + CARD_PAD,
+        "Pronúncia", f_section,
+        f"{err_count} {sol_word}", f_badge,
+    )
 
-    # Linha fina decorativa abaixo do título
-    line_y = HH // 2 + 28
-    draw.line((bar_x + 28, line_y, bar_x + 240, line_y), fill=(255, 255, 255, 120), width=2)
+    max_x = PAD + ci
+    cx = PAD + CARD_PAD
+    cy = _draw_highlighted_words(
+        draw, cx, cy,
+        original.split(), error_words,
+        f_body, f_body_b,
+        HIGHLIGHT_YELLOW, TEXT_DARK,
+        max_x, lh, sp, body_h,
+    )
 
-    # Subtítulo
-    draw.text((bar_x + 28, line_y + 8), "English Teacher", font=f_sub, fill=(255, 255, 255, 180))
+    y += c1h + 36
 
-    # Decoração: três pontos no canto direito
-    dx = W - PAD - 60
-    dy = HH // 2 - 20
-    for i, c in enumerate([(168, 85, 247), (124, 58, 237), (88, 28, 135)]):
-        draw.ellipse((dx + i * 22, dy + i * 14, dx + 12 + i * 22, dy + 12 + i * 14), fill=c)
+    # Card 2: Como melhorar
+    _card_shadow(draw, PAD - 2, y, W - PAD + 2, y + c2h)
+    draw.rounded_rectangle(
+        (PAD - 2, y, W - PAD + 2, y + c2h),
+        radius=CARD_R, fill=CARD_BG,
+    )
 
-    y = HH + 48 + top_offset
+    cy = _draw_card_header(
+        draw, PAD, y + CARD_PAD,
+        "Como melhorar", f_section,
+        "corrigido", f_badge,
+    )
 
-    # ── Card: O que você disse ──
-    draw.ellipse((PAD + 10, y + 8, PAD + 22, y + 20), fill=PURPLE)
-    draw.text((PAD + 32, y - 2), "O QUE VOCÊ DISSE", font=f_label, fill=PURPLE)
-    y += 50
+    cx = PAD + CARD_PAD
+    cy = _draw_highlighted_words(
+        draw, cx, cy,
+        corrected.split(), right_set,
+        f_body, f_body_b,
+        HIGHLIGHT_GREEN, ACCENT_GREEN,
+        max_x, lh, sp, body_h,
+    )
 
-    oh = _th(original, f_body, ci)
-    ch = oh + CARD_PAD * 2
-    _card(draw, PAD, y, W - PAD, y + ch, PURPLE)
-    _dt(draw, (PAD + BORDER_W + CARD_PAD, y + CARD_PAD), original, f_body, BODY, ci)
-    y += ch + 32
-
-    # ── Card: Versão corrigida ──
-    draw.ellipse((PAD + 10, y + 8, PAD + 22, y + 20), fill=GREEN)
-    draw.text((PAD + 32, y - 2), "VERSÃO CORRIGIDA", font=f_label, fill=GREEN)
-    y += 50
-
-    ch2 = _th(corrected, f_body_b, ci) + CARD_PAD * 2
-    _card(draw, PAD, y, W - PAD, y + ch2, GREEN)
-    _dt(draw, (PAD + BORDER_W + CARD_PAD, y + CARD_PAD), corrected, f_body_b, GREEN_TXT, ci)
-    y += ch2 + 44
-
-    # ── Correções ──
-    if errors:
-        draw.text((PAD, y), "CORREÇÕES", font=f_sec, fill=MUTED)
-        y += 56
-
-        for error in errors:
-            wrong = error.get("wrong", "")
-            right = error.get("right", "")
-            rule = error.get("rule", "")
-
-            ech = 100 + (40 if rule else 0)
-            _card(draw, PAD, y, W - PAD, y + ech)
-
-            # Pills
-            py = y + 28
-            px = PAD + 32
-            px = _pill(draw, px, py, wrong, f_pill, RED, PILL_RED_BG, strike=True)
-
-            # Seta
-            px += 24
-            ay = py + 16
-            draw.line((px, ay, px + 32, ay), fill=GREEN, width=3)
-            draw.polygon([(px + 32, ay - 7), (px + 42, ay), (px + 32, ay + 7)], fill=GREEN)
-            px += 54
-
-            _pill(draw, px, py, right, f_pill_b, GREEN, PILL_GREEN_BG)
-
-            if rule:
-                draw.text((PAD + 32, y + 82), rule, font=f_rule, fill=RULE_C)
-
-            y += ech + 20
+    y += c2h + 44
 
     # ── Encorajamento ──
     if encouragement:
-        y += 16
-        eh = _th(encouragement, f_enc, cw - 96) + 64
-        draw.rounded_rectangle(
-            (PAD, y, W - PAD, y + eh),
-            radius=CARD_R, fill=ENC_BG, outline=ENC_BORDER,
-        )
-        _dt(draw, (PAD + 48, y + 32), encouragement, f_enc, YELLOW, cw - 96)
+        draw.text((PAD, y), encouragement, font=f_enc, fill=ACCENT_PURPLE)
 
-    # ── Rodapé discreto no final da imagem ──
-    footer_y = img_h - 50
-    draw.text(
-        (W // 2, footer_y),
-        "English Teacher Bot",
-        font=_f(20), fill=(50, 50, 60), anchor="mm",
+    # ── Home bar ──
+    bar_w, bar_h = 180, 6
+    bar_x = (W - bar_w) // 2
+    bar_y = img_h - 36
+    draw.rounded_rectangle(
+        (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
+        radius=bar_h // 2, fill=HOME_BAR,
     )
 
     # ── Salvar ──

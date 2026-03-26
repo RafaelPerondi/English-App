@@ -78,7 +78,7 @@ Respond in this EXACT JSON format (no markdown, no backticks):
 }
 
 If the text has no errors, set "errors" to an empty list and still provide tips.
-Always provide at least 1 tip. Provide the response and nothing else."""
+Always provide at least 1 tip. Write all tips in Brazilian Portuguese. Provide the response and nothing else."""
 
 
 def _build_first_message_prompt(session: Session) -> str:
