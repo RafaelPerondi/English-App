@@ -28,16 +28,16 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 MESSAGES = {
     "welcome": (
-        "👋 Olá! Eu sou seu professor de inglês!\n\n"
-        "Para começarmos, qual é o seu *nome*?"
+        "👋 Saudações! Tenho a honra de ser seu instrutor de inglês.\n\n"
+        "Para iniciarmos nossas lições, poderia, por gentileza, informar o seu *nome*?"
     ),
     "ask_level": (
-        "Prazer, {name}! 😊\n\n"
-        "Qual é o seu nível de inglês?\n\n"
+        "É um grande prazer conhecê-lo, {name}! 😊\n\n"
+        "Para que eu possa personalizar nossas aulas de inglês de maneira ideal, poderia gentilmente informar seu nível de proficiência?\n\n"
         "*A* — Iniciante (Beginner)\n"
         "*B* — Intermediário (Intermediate)\n"
         "*C* — Avançado (Advanced)\n\n"
-        "Responda com *A*, *B* ou *C*."
+        "Agradeço se puder responder com *A*, *B* ou *C*."
     ),
     "invalid_level": (
         "Ops! Por favor, responda apenas com *A*, *B* ou *C*.\n\n"
@@ -46,13 +46,13 @@ MESSAGES = {
         "*C* — Avançado"
     ),
     "ask_topic": (
-        "Ótimo! Nível *{level}* ({description}). ✅\n\n"
-        "Sobre o que você gostaria de conversar em inglês? 🤔\n\n"
-        "Exemplos: viagens, comida, esportes, tecnologia, filmes..."
+        "Excelente! Seu nível foi registrado como *{level}* ({description}). ✅\n\n"
+        "Para que nossas conversas em inglês sejam mais proveitosas, poderia informar os temas que despertam maior interesse em você? 🤔\n\n"
+        "Por exemplo: literatura, viagens culturais, gastronomia internacional, inovação tecnológica, cinema clássico, artes ou música."
     ),
     "starting": (
-        "Perfeito! Vou preparar uma conversa sobre *{topic}* para você. 🎯\n\n"
-        "Pode responder em inglês por *áudio* 🎤 ou *texto* ✍️"
+        "Excelente! Prepararei uma conversa cuidadosamente elaborada sobre *{topic}* para você. 🎯\n\n"
+        "Você poderá responder em inglês, seja por *áudio* 🎤 ou por *texto* ✍️."
     ),
     "processing": "🔄 Um momento, estou preparando seu feedback...",
     "error": "😅 Ops! Algo deu errado. Tente novamente em alguns segundos.",
