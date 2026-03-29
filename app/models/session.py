@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 class ConversationState(str, enum.Enum):
     """Estados possíveis da conversa com o aluno."""
 
-    WAITING_NAME = "waiting_name"
+    NEW = "new"                    # acabou de chegar, ainda não recebeu boas-vindas
+    WAITING_NAME = "waiting_name"  # boas-vindas enviadas, esperando o nome
     WAITING_LEVEL = "waiting_level"
     WAITING_TOPIC = "waiting_topic"
     CHATTING = "chatting"
@@ -66,7 +67,7 @@ class Session(BaseModel):
     name: Optional[str] = None
     level: Optional[EnglishLevel] = None
     topic: Optional[str] = None
-    state: ConversationState = ConversationState.WAITING_NAME
+    state: ConversationState = ConversationState.NEW
     chat_history: list[ChatMessage] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
@@ -88,6 +89,6 @@ class Session(BaseModel):
         self.name = None
         self.level = None
         self.topic = None
-        self.state = ConversationState.WAITING_NAME
+        self.state = ConversationState.NEW
         self.chat_history.clear()
         self.updated_at = datetime.now()

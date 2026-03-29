@@ -28,8 +28,12 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 MESSAGES = {
     "welcome": (
-        "👋 Saudações! Tenho a honra de ser seu instrutor de inglês.\n\n"
-        "Para iniciarmos nossas lições, poderia, por gentileza, informar o seu *nome*?"
+        "👋 Olá! Seja muito bem-vindo(a)!\n\n"
+        "Sou seu instrutor de inglês e estou aqui para te ajudar a praticar e evoluir. 🎓\n\n"
+        "Vamos começar? Me diga, por gentileza, qual é o seu *nome*?"
+    ),
+    "ask_name": (
+        "Por favor, me diga o seu *nome* para que eu possa te chamar corretamente. 😊"
     ),
     "ask_level": (
         "É um grande prazer conhecê-lo, {name}! 😊\n\n"
@@ -139,6 +143,9 @@ async def _process_message(
     session = session_manager.get(phone)
 
     match session.state:
+        case ConversationState.NEW:
+            await _handle_new(phone, text, session)
+
         case ConversationState.WAITING_NAME:
             await _handle_waiting_name(phone, text, session)
 
@@ -156,10 +163,18 @@ async def _process_message(
 # Handlers de cada estado
 # ─────────────────────────────────────────────
 
+async def _handle_new(phone: str, text: str | None, session) -> None:
+    """Estado: primeiro contato — envia boas-vindas e pergunta o nome."""
+    # Qualquer mensagem (texto, áudio, imagem) dispara as boas-vindas
+    session.state = ConversationState.WAITING_NAME
+    await whatsapp_service.send_text(phone, MESSAGES["welcome"])
+
+
 async def _handle_waiting_name(phone: str, text: str | None, session) -> None:
-    """Estado: esperando o nome do aluno."""
+    """Estado: esperando o nome do aluno (boas-vindas já foram enviadas)."""
     if not text:
-        await whatsapp_service.send_text(phone, MESSAGES["welcome"])
+        # Se mandou áudio/imagem em vez de texto, pede de novo
+        await whatsapp_service.send_text(phone, MESSAGES["ask_name"])
         return
 
     session.name = clean_text(text)
