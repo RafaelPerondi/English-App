@@ -26,6 +26,7 @@ def setup_webhook() -> None:
     )
 
     payload = {
+        "enabled": True,
         "url": webhook_url,
         "webhook_by_events": False,
         "webhook_base64": True,

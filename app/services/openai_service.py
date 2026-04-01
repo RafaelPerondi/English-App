@@ -263,6 +263,18 @@ async def transcribe_audio(audio_path: Path) -> str:
     """Transcreve um arquivo de áudio usando Whisper."""
     logger.info("Transcrevendo áudio: %s", audio_path)
 
+    # Converte para mp3 com ffmpeg (resolve formatos inválidos do WhatsApp)
+    import subprocess
+    mp3_path = audio_path.with_suffix(".mp3")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(audio_path), "-ar", "16000", "-ac", "1", str(mp3_path)],
+            capture_output=True, check=True, timeout=30,
+        )
+        audio_path = mp3_path
+    except Exception as e:
+        logger.warning("ffmpeg falhou, tentando original: %s", e)
+
     with open(audio_path, "rb") as audio_file:
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
