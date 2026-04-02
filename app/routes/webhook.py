@@ -1,6 +1,8 @@
 """
 Rotas do webhook — recebe mensagens do WhatsApp via Evolution API
 e orquestra o fluxo de conversa do bot professor.
+
+v2.0 — Migrado de SessionManager (memória) para PostgreSQL.
 """
 
 from __future__ import annotations
@@ -13,7 +15,8 @@ from fastapi import APIRouter, Request
 
 from config import AUDIO_CACHE_DIR
 from app.models.session import ConversationState, EnglishLevel
-from app.services.session_manager import session_manager
+from app.database.connection import get_db
+from app.database.repository import UserRepository
 from app.services import openai_service, whatsapp_service, image_service
 from app.utils.helpers import generate_id, is_valid_level, clean_text
 
@@ -92,7 +95,6 @@ async def handle_webhook(request: Request):
         return {"status": "ignored", "reason": "own message"}
 
     # Extrai informações da mensagem
-    # Usa senderPn (número real) quando remoteJid é @lid (formato novo do WhatsApp)
     remote_jid = data.get("key", {}).get("remoteJid", "")
     sender_pn = data.get("key", {}).get("senderPn", "")
     if "@lid" in remote_jid and sender_pn:
@@ -113,8 +115,14 @@ async def handle_webhook(request: Request):
 
     # Comando especial: reset
     if text and text.strip().lower() in ("/reset", "/reiniciar", "/novo"):
-        session = session_manager.get(phone)
-        session.reset()
+        async with get_db() as db:
+            repo = UserRepository(db)
+            user = await repo.get_or_create_user(phone)
+            conv = await repo.get_active_conversation(user.id)
+            if conv:
+                await repo.end_conversation(conv.id)
+            # Cria nova conversa no estado waiting_name
+            new_conv = await repo.create_conversation(user.id, state="waiting_name")
         await whatsapp_service.send_text(phone, MESSAGES["reset"])
         return {"status": "ok"}
 
@@ -140,72 +148,85 @@ async def _process_message(
     raw_data: dict,
 ) -> None:
     """Orquestra o fluxo de conversa baseado no estado da sessão."""
-    session = session_manager.get(phone)
 
-    match session.state:
-        case ConversationState.NEW:
-            await _handle_new(phone, text, session)
+    async with get_db() as db:
+        repo = UserRepository(db)
 
-        case ConversationState.WAITING_NAME:
-            await _handle_waiting_name(phone, text, session)
+        # Busca ou cria o usuário
+        user = await repo.get_or_create_user(phone)
 
-        case ConversationState.WAITING_LEVEL:
-            await _handle_waiting_level(phone, text, session)
+        # Busca ou cria a conversa ativa
+        conv = await repo.get_or_create_conversation(user.id)
 
-        case ConversationState.WAITING_TOPIC:
-            await _handle_waiting_topic(phone, text, session)
+        match conv.state:
+            case "new":
+                await _handle_new(phone, user, conv, repo)
 
-        case ConversationState.CHATTING:
-            await _handle_chatting(phone, text, is_audio, message_id, raw_data, session)
+            case "waiting_name":
+                await _handle_waiting_name(phone, text, user, conv, repo)
+
+            case "waiting_level":
+                await _handle_waiting_level(phone, text, user, conv, repo)
+
+            case "waiting_topic":
+                await _handle_waiting_topic(phone, text, user, conv, repo)
+
+            case "chatting":
+                await _handle_chatting(
+                    phone, text, is_audio, message_id, raw_data,
+                    user, conv, repo,
+                )
 
 
 # ─────────────────────────────────────────────
 # Handlers de cada estado
 # ─────────────────────────────────────────────
 
-async def _handle_new(phone: str, text: str | None, session) -> None:
+async def _handle_new(phone, user, conv, repo: UserRepository):
     """Estado: primeiro contato — envia boas-vindas e pergunta o nome."""
-    # Qualquer mensagem (texto, áudio, imagem) dispara as boas-vindas
-    session.state = ConversationState.WAITING_NAME
+    await repo.update_conversation(conv.id, state="waiting_name")
+    await repo.increment_progress(user.id, new_session=True)
     await whatsapp_service.send_text(phone, MESSAGES["welcome"])
 
 
-async def _handle_waiting_name(phone: str, text: str | None, session) -> None:
-    """Estado: esperando o nome do aluno (boas-vindas já foram enviadas)."""
+async def _handle_waiting_name(phone, text, user, conv, repo: UserRepository):
+    """Estado: esperando o nome do aluno."""
     if not text:
-        # Se mandou áudio/imagem em vez de texto, pede de novo
         await whatsapp_service.send_text(phone, MESSAGES["ask_name"])
         return
 
-    session.name = clean_text(text)
-    session.state = ConversationState.WAITING_LEVEL
+    name = clean_text(text)
+    await repo.update_user(user.id, name=name)
+    await repo.update_conversation(conv.id, state="waiting_level")
 
     await whatsapp_service.send_text(
         phone,
-        MESSAGES["ask_level"].format(name=session.name),
+        MESSAGES["ask_level"].format(name=name),
     )
 
 
-async def _handle_waiting_level(phone: str, text: str | None, session) -> None:
+async def _handle_waiting_level(phone, text, user, conv, repo: UserRepository):
     """Estado: esperando o nível de inglês."""
     if not text or not is_valid_level(text):
         await whatsapp_service.send_text(phone, MESSAGES["invalid_level"])
         return
 
     level_key = text.strip().upper()
-    session.level = EnglishLevel(level_key)
-    session.state = ConversationState.WAITING_TOPIC
+    level_enum = EnglishLevel(level_key)
+
+    await repo.update_user(user.id, english_level=level_key)
+    await repo.update_conversation(conv.id, state="waiting_topic", english_level=level_key)
 
     await whatsapp_service.send_text(
         phone,
         MESSAGES["ask_topic"].format(
-            level=session.level.value,
-            description=session.level.description,
+            level=level_enum.value,
+            description=level_enum.description,
         ),
     )
 
 
-async def _handle_waiting_topic(phone: str, text: str | None, session) -> None:
+async def _handle_waiting_topic(phone, text, user, conv, repo: UserRepository):
     """Estado: esperando o tema da conversa."""
     if not text:
         await whatsapp_service.send_text(
@@ -214,36 +235,39 @@ async def _handle_waiting_topic(phone: str, text: str | None, session) -> None:
         )
         return
 
-    session.topic = clean_text(text)
-    session.state = ConversationState.CHATTING
+    topic = clean_text(text)
+    await repo.update_user(user.id, preferred_topic=topic)
+    await repo.update_conversation(conv.id, state="chatting", topic=topic)
 
     # Avisa que está preparando
     await whatsapp_service.send_text(
         phone,
-        MESSAGES["starting"].format(topic=session.topic),
+        MESSAGES["starting"].format(topic=topic),
     )
 
-    # Gera primeira mensagem do professor
-    first_message = await openai_service.generate_first_message(session)
+    # Monta a session-like para o openai_service
+    session_data = _build_session_data(user.name, conv.english_level, topic, [])
 
-    # Envia apenas como texto (áudio só quando o aluno mandar áudio)
+    # Gera primeira mensagem do professor
+    first_message = await openai_service.generate_first_message(session_data)
+
+    # Salva a mensagem do bot no banco
+    await repo.add_message(conv.id, "assistant", first_message)
+
+    # Envia
     await whatsapp_service.send_text(phone, f"🎓 _{first_message}_")
 
 
 async def _handle_chatting(
-    phone: str,
-    text: str | None,
-    is_audio: bool,
-    message_id: str,
-    raw_data: dict,
-    session,
-) -> None:
+    phone, text, is_audio, message_id, raw_data,
+    user, conv, repo: UserRepository,
+):
     """Estado: conversa ativa — processa áudio ou texto do aluno."""
 
     if is_audio:
-        await _handle_audio_response(phone, message_id, raw_data, session)
+        await _handle_audio_response(phone, message_id, raw_data, user, conv, repo)
     elif text:
-        await _handle_text_response(phone, text, session)
+        await _handle_text_response(phone, text, user, conv, repo)
     else:
         await whatsapp_service.send_text(
             phone,
@@ -252,8 +276,8 @@ async def _handle_chatting(
 
 
 async def _handle_audio_response(
-    phone: str, message_id: str, raw_data: dict, session
-) -> None:
+    phone, message_id, raw_data, user, conv, repo: UserRepository,
+):
     """Processa resposta em áudio: transcreve, gera feedback visual, continua conversa."""
 
     await whatsapp_service.send_text(phone, MESSAGES["processing"])
@@ -274,41 +298,69 @@ async def _handle_audio_response(
         )
         return
 
-    # 3. Corrige
+    # 3. Salva mensagem do aluno no banco (tipo audio + transcrição)
+    user_msg = await repo.add_message(
+        conv.id, "user", transcription,
+        message_type="audio",
+        audio_transcription=transcription,
+    )
+    await repo.increment_progress(user.id, messages=1, audio_messages=1)
+
+    # 4. Corrige
     correction = await openai_service.correct_text(transcription)
 
-    # 4. Gera imagem de feedback (sem tips — ficam no texto)
+    # 5. Salva correção no banco
+    num_errors = len(correction.get("errors", []))
+    await repo.save_correction(user_msg.id, correction)
+    await repo.increment_progress(user.id, errors_found=num_errors)
+
+    # 6. Gera imagem de feedback
     image_id = generate_id()
     image_path = image_service.generate_feedback_image(correction, image_id)
 
-    # 5. Envia imagem sozinha
+    # 7. Envia imagem
     await whatsapp_service.send_image(phone, image_path)
 
-    # 6. Envia tips como texto separado
+    # 8. Envia tips como texto separado
     tips = correction.get("tips", [])
     if tips:
         tips_text = "\n".join(f"💡 {tip}" for tip in tips)
         await whatsapp_service.send_text(phone, f"📚 *Dicas:*\n\n{tips_text}")
 
-    # 7. Continua a conversa (responde ao que o aluno disse)
-    reply = await openai_service.chat_response(session, transcription)
+    # 9. Busca histórico do banco para contexto da OpenAI
+    messages = await repo.get_conversation_messages(conv.id, limit=30)
+    openai_history = repo.messages_to_openai_format(messages)
+    session_data = _build_session_data(user.name, conv.english_level, conv.topic, openai_history)
 
-    # 8. Envia resposta em áudio (porque o aluno mandou áudio)
+    # 10. Gera resposta do bot
+    reply = await openai_service.chat_response(session_data, transcription)
+
+    # 11. Salva resposta do bot no banco
+    await repo.add_message(conv.id, "assistant", reply)
+
+    # 12. Envia áudio + texto
     audio_id = generate_id()
     reply_audio = await openai_service.text_to_speech(reply, audio_id)
     await whatsapp_service.send_audio(phone, reply_audio)
-
-    # Também envia texto para referência
     await whatsapp_service.send_text(phone, f"📝 _{reply}_")
 
 
-async def _handle_text_response(phone: str, text: str, session) -> None:
-    """Processa resposta em texto: corrige e continua conversa (sem áudio)."""
+async def _handle_text_response(phone, text, user, conv, repo: UserRepository):
+    """Processa resposta em texto: corrige e continua conversa."""
 
-    # 1. Corrige o texto
+    # 1. Salva mensagem do aluno no banco
+    user_msg = await repo.add_message(conv.id, "user", text)
+    await repo.increment_progress(user.id, messages=1)
+
+    # 2. Corrige o texto
     correction = await openai_service.correct_text(text)
 
-    # 2. Monta mensagem de correção
+    # 3. Salva correção no banco
+    num_errors = len(correction.get("errors", []))
+    await repo.save_correction(user_msg.id, correction)
+    await repo.increment_progress(user.id, errors_found=num_errors)
+
+    # 4. Monta mensagem de correção (mesma lógica de antes)
     errors = correction.get("errors", [])
     if errors:
         correction_lines = ["📝 *Correction:*\n"]
@@ -334,12 +386,20 @@ async def _handle_text_response(phone: str, text: str, session) -> None:
 
         await whatsapp_service.send_text(phone, "\n".join(correction_lines))
     else:
-        # Sem erros — só elogia
         encouragement = correction.get("encouragement", "Perfect! No errors!")
         await whatsapp_service.send_text(phone, f"✅ {encouragement}")
 
-    # 3. Continua a conversa (apenas texto, sem áudio)
-    reply = await openai_service.chat_response(session, text)
+    # 5. Busca histórico do banco
+    messages = await repo.get_conversation_messages(conv.id, limit=30)
+    openai_history = repo.messages_to_openai_format(messages)
+    session_data = _build_session_data(user.name, conv.english_level, conv.topic, openai_history)
+
+    # 6. Continua a conversa
+    reply = await openai_service.chat_response(session_data, text)
+
+    # 7. Salva resposta do bot
+    await repo.add_message(conv.id, "assistant", reply)
+
     await whatsapp_service.send_text(phone, f"🎓 _{reply}_")
 
 
@@ -347,15 +407,38 @@ async def _handle_text_response(phone: str, text: str, session) -> None:
 # Funções auxiliares
 # ─────────────────────────────────────────────
 
+def _build_session_data(
+    name: str | None,
+    english_level: str | None,
+    topic: str | None,
+    chat_history: list[dict],
+) -> dict:
+    """
+    Monta um dict compatível com o que o openai_service espera.
+    Substitui o objeto Session do modelo Pydantic antigo.
+    """
+    level = None
+    if english_level:
+        try:
+            level = EnglishLevel(english_level)
+        except ValueError:
+            level = EnglishLevel.A
+
+    return {
+        "name": name or "Student",
+        "level": level or EnglishLevel.A,
+        "topic": topic or "general conversation",
+        "chat_history": chat_history,
+    }
+
+
 def _extract_text(data: dict) -> str | None:
     """Extrai o texto de diferentes tipos de mensagem."""
     message = data.get("message", {})
 
-    # Texto simples
     if "conversation" in message:
         return message["conversation"]
 
-    # Mensagem estendida
     if "extendedTextMessage" in message:
         return message["extendedTextMessage"].get("text")
 
@@ -370,7 +453,6 @@ async def _download_audio(message_id: str, raw_data: dict) -> Path | None:
     try:
         audio_path = AUDIO_CACHE_DIR / f"{generate_id()}.ogg"
 
-        # Tenta obter via base64
         try:
             media_data = await whatsapp_service.get_media_base64(message_id)
             if media_data and "base64" in media_data:
@@ -381,7 +463,6 @@ async def _download_audio(message_id: str, raw_data: dict) -> Path | None:
         except Exception as e:
             logger.warning("Falha ao obter áudio via base64: %s", e)
 
-        # Fallback: tenta URL direta da mensagem
         message = raw_data.get("message", {})
         audio_msg = message.get("audioMessage", {}) or message.get("pttMessage", {})
         media_url = audio_msg.get("url")

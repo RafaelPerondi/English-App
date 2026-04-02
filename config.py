@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     evolution_api_key: str = ""
     evolution_instance: str = "english-teacher"
 
+    # PostgreSQL  ← NOVO
+    database_url: str = "postgresql+asyncpg://evo_user:SenhaForte123@localhost:5432/evolution"
+
     # ngrok
     ngrok_url: str = ""
 

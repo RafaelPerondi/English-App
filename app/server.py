@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.webhook import router as webhook_router
 from app.services import whatsapp_service
-from app.services.session_manager import session_manager
+from app.database.connection import init_db, close_db  # ← NOVO
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Gerencia startup e shutdown da aplicação."""
     logger.info("🚀 English Teacher Bot iniciando...")
+
+    # Inicializa conexão com o banco  ← NOVO
+    await init_db()
+    logger.info("🗄️  Banco de dados conectado")
+
     logger.info("📡 Webhook pronto em /webhook/messages")
     yield
     logger.info("🛑 Encerrando bot...")
     await whatsapp_service.close()
+    await close_db()  # ← NOVO
     logger.info("✅ Bot encerrado com sucesso.")
 
 
@@ -33,7 +39,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="English Teacher Bot",
         description="Bot professor de inglês via WhatsApp",
-        version="1.0.0",
+        version="2.0.0",
         lifespan=lifespan,
     )
 
@@ -49,13 +55,12 @@ def create_app() -> FastAPI:
     # Rotas
     app.include_router(webhook_router)
 
-    # Health check
+    # Health check  ← ATUALIZADO (sem session_manager)
     @app.get("/health")
     async def health():
-        sessions = session_manager.list_active()
         return {
             "status": "online",
-            "active_sessions": len(sessions),
+            "database": "connected",
         }
 
     # Info
@@ -63,7 +68,7 @@ def create_app() -> FastAPI:
     async def root():
         return {
             "name": "English Teacher Bot",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "docs": "/docs",
         }
 

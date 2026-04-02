@@ -1,17 +1,20 @@
 """
 Serviço de integração com a OpenAI.
 Responsável por: chat (GPT), transcrição (Whisper) e geração de áudio (TTS).
+
+v2.0 — Aceita session_data (dict) em vez do objeto Session.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from config import settings, AUDIO_CACHE_DIR
-from app.models.session import EnglishLevel, Session
+from app.models.session import EnglishLevel
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +25,11 @@ client = AsyncOpenAI(api_key=settings.openai_api_key)
 # Prompts do sistema
 # ─────────────────────────────────────────────
 
-def _build_system_prompt(session: Session) -> str:
+def _build_system_prompt(session_data: dict) -> str:
     """Constrói o prompt do sistema baseado no perfil do aluno."""
-    level = session.level
+    level = session_data.get("level", EnglishLevel.A)
+    name = session_data.get("name", "Student")
+    topic = session_data.get("topic", "general conversation")
 
     level_instructions = {
         EnglishLevel.A: (
@@ -51,11 +56,11 @@ def _build_system_prompt(session: Session) -> str:
         ),
     }
 
-    return f"""You are a professional English teacher having a natural conversation with a student named {session.name}.
+    return f"""You are a professional English teacher having a natural conversation with a student named {name}.
 
 {level_instructions.get(level, level_instructions[EnglishLevel.A])}
 
-The conversation topic is: "{session.topic}".
+The conversation topic is: "{topic}".
 
 TEACHING BEHAVIOR:
 
@@ -163,9 +168,10 @@ ADDITIONAL RULES:
 """
 
 
-def _build_first_message_prompt(session: Session) -> str:
+def _build_first_message_prompt(session_data: dict) -> str:
     """Prompt para a primeira mensagem sobre o tema escolhido."""
-    return f"""Start a conversation about "{session.topic}" with the student.
+    topic = session_data.get("topic", "general conversation")
+    return f"""Start a conversation about "{topic}" with the student.
 Introduce the topic in a fun and engaging way.
 Ask an opening question to get them talking.
 Keep it to 2-3 sentences. Be friendly and enthusiastic."""
@@ -175,15 +181,17 @@ Keep it to 2-3 sentences. Be friendly and enthusiastic."""
 # Chat (GPT)
 # ─────────────────────────────────────────────
 
-async def chat_response(session: Session, user_message: str) -> str:
+async def chat_response(session_data: dict, user_message: str) -> str:
     """
     Gera resposta de conversa do professor.
-    Mantém o contexto usando o histórico da sessão.
+    session_data contém: name, level, topic, chat_history (lista de dicts).
     """
-    system_prompt = _build_system_prompt(session)
+    system_prompt = _build_system_prompt(session_data)
+    chat_history = session_data.get("chat_history", [])
+
     messages = [
         {"role": "system", "content": system_prompt},
-        *session.get_openai_messages(),
+        *chat_history,
         {"role": "user", "content": user_message},
     ]
 
@@ -196,17 +204,14 @@ async def chat_response(session: Session, user_message: str) -> str:
 
     reply = response.choices[0].message.content.strip()
 
-    # Salva no histórico
-    session.add_message("user", user_message)
-    session.add_message("assistant", reply)
-
+    # NÃO salva no histórico aqui — o webhook faz isso via banco
     return reply
 
 
-async def generate_first_message(session: Session) -> str:
+async def generate_first_message(session_data: dict) -> str:
     """Gera a primeira mensagem do professor sobre o tema escolhido."""
-    system_prompt = _build_system_prompt(session)
-    user_prompt = _build_first_message_prompt(session)
+    system_prompt = _build_system_prompt(session_data)
+    user_prompt = _build_first_message_prompt(session_data)
 
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
@@ -218,9 +223,7 @@ async def generate_first_message(session: Session) -> str:
         max_tokens=300,
     )
 
-    reply = response.choices[0].message.content.strip()
-    session.add_message("assistant", reply)
-    return reply
+    return response.choices[0].message.content.strip()
 
 
 async def correct_text(student_text: str) -> dict:
@@ -228,8 +231,6 @@ async def correct_text(student_text: str) -> dict:
     Analisa e corrige o texto do aluno.
     Retorna dict com: original, corrected, errors, tips, encouragement.
     """
-    import json
-
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -263,7 +264,6 @@ async def transcribe_audio(audio_path: Path) -> str:
     """Transcreve um arquivo de áudio usando Whisper."""
     logger.info("Transcrevendo áudio: %s", audio_path)
 
-    # Converte para mp3 com ffmpeg (resolve formatos inválidos do WhatsApp)
     import subprocess
     mp3_path = audio_path.with_suffix(".mp3")
     try:
@@ -292,10 +292,7 @@ async def transcribe_audio(audio_path: Path) -> str:
 # ─────────────────────────────────────────────
 
 async def text_to_speech(text: str, filename: str) -> Path:
-    """
-    Converte texto em áudio MP3.
-    Retorna o caminho do arquivo gerado.
-    """
+    """Converte texto em áudio MP3."""
     output_path = AUDIO_CACHE_DIR / f"{filename}.mp3"
 
     response = await client.audio.speech.create(
