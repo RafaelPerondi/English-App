@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Virtualenvs (importante — não copiar pra imagem)
+venv/
+env/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & caches runtime (vão em volumes Docker)
+*.log
+audio_cache/
+
+# Backups & misc
+*.bak
+*.tar.gz
+*.sqlc
+ngrok.exe
+setup.bat
+start.bat
+.env.save
+.env.example
+
+# Docker (não recursivo)
+Dockerfile
+docker-compose.yml
+.dockerignore

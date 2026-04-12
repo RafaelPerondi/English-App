@@ -1,7 +1,12 @@
 """
-Ponto de entrada do English Teacher Bot.
-Rode com: python main.py
+English Teacher Bot — entrypoint.
+
+Production: started via `docker compose up -d` (see Dockerfile CMD).
+Development: run locally with `python main.py`, auto-reload disabled by default.
+Set DEV_RELOAD=true in .env to enable reload locally.
 """
+import os
+import logging
 
 import uvicorn
 
@@ -9,31 +14,32 @@ from config import settings
 from app.utils.helpers import setup_logging
 from app.server import create_app
 
-# Configura logging antes de tudo
 setup_logging()
+logger = logging.getLogger(__name__)
 
-# Cria a aplicação
+# Export for uvicorn workers (`main:app`)
 app = create_app()
 
-if __name__ == "__main__":
-    print()
-    print("  ╔══════════════════════════════════════════╗")
-    print("  ║     🎓 English Teacher Bot v1.0.0        ║")
-    print("  ╠══════════════════════════════════════════╣")
-    print(f"  ║  Servidor: http://localhost:{settings.server_port}        ║")
-    print(f"  ║  Docs:     http://localhost:{settings.server_port}/docs   ║")
-    print(f"  ║  Webhook:  /webhook/messages             ║")
-    print("  ║                                          ║")
-    print("  ║  ⚠️  Lembre de rodar o ngrok:             ║")
-    print(f"  ║  ngrok http {settings.server_port}                       ║")
-    print("  ╚══════════════════════════════════════════╝")
-    print()
 
+def _banner() -> None:
+    logger.info("─" * 60)
+    logger.info("English Teacher Bot v1.0.0")
+    logger.info("Listening on %s:%d", settings.server_host, settings.server_port)
+    logger.info("Docs:    http://%s:%d/docs", settings.server_host, settings.server_port)
+    logger.info("Webhook: /webhook/messages")
+    logger.info("─" * 60)
+
+
+if __name__ == "__main__":
+    dev_reload = os.getenv("DEV_RELOAD", "").lower() in {"1", "true", "yes"}
+    _banner()
     uvicorn.run(
         "main:app",
         host=settings.server_host,
         port=settings.server_port,
-        reload=True,
-        reload_excludes=["*.log", "audio_cache/*", "*.pyc"],
+        reload=dev_reload,
         log_level="info",
+        access_log=True,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
     )
